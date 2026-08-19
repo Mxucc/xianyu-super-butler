@@ -232,7 +232,7 @@ npm run dev
 
 ## 📊 Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=23Star/xianyu-super-butler&type=Date)](https://star-history.com/#23Star/xianyu-super-butler&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=Mxucc/xianyu-super-butler&type=Date)](https://star-history.dera.page/#Mxucc/xianyu-super-butler&Date)
 
 ---
 
