@@ -76,7 +76,31 @@
 
 ## 🚀 使用方法
 
-### 快速启动
+### NAS / Docker 镜像部署（推荐）
+
+GitHub Actions 分别构建并验证 `linux/amd64` 和 `linux/arm64`，通过后发布到 Docker Hub：
+
+```text
+muzileee/xianyu-super-butler:latest
+```
+
+NAS 只需安装容器管理工具、拉取镜像并设置：
+
+- 端口：宿主机 `8080` → 容器 `8080`
+- 目录：NAS 上的专用数据目录 → 容器 `/app/data`
+- 环境变量：`ADMIN_EMAIL`（管理员邮箱）、`ADMIN_PASSWORD`（自定义管理员密码）
+
+启动后访问 `http://NAS的IP:8080`，使用 `admin` 和设置的密码登录。管理员仅在首次启动时创建，更新和重新创建容器不会覆盖现有密码。数据库、配置、日志、图片和浏览器登录缓存都保存在挂载的数据目录中。
+
+也可以只下载 `docker-compose.yml` 和 `.env.example`，将后者重命名为 `.env` 并填写邮箱、密码和数据路径，再执行：
+
+```bash
+docker compose up -d
+```
+
+第一次发布前，请先完成 Docker Hub 和 GitHub 密钥配置。完整步骤、NAS 配置示例和更新方法见 [Docker / NAS 部署指南](docs/docker-nas.md)。
+
+### 源码启动
 
 ```bash
 # 1. 克隆项目
@@ -102,10 +126,10 @@ python Start.py
 ### 🔐 默认登录信息
 
 ```
-这个没有了，按网页提示操作
+无默认密码。Docker 部署通过 ADMIN_EMAIL / ADMIN_PASSWORD 首次初始化；源码部署执行 python init_admin.py。
 ```
 
-⚠️ **安全提示：首次登录后请立即修改默认密码！**
+管理员密码由部署者自行设置。
 
 **说明：**
 - `npm run build` 会将前端打包到 `static/` 目录
@@ -129,7 +153,7 @@ npm run dev
 
 ### 首次使用
 
-1. **注册账号** - 访问 http://localhost:8080/register 创建管理员账号
+1. **初始化管理员** - Docker 部署首次启动自动创建；源码部署执行 `python init_admin.py`
 2. **添加闲鱼账号** - 支持扫码登录、密码登录、手动输入Cookie
 3. **配置关键词** - 为每个账号配置自动回复关键词和AI智能议价
 4. **开始使用** - 系统会自动监听闲鱼消息并自动回复、自动发货

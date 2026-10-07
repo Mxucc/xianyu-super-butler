@@ -145,6 +145,12 @@ except Exception as e:
 # ==================== 检查并安装Playwright浏览器 ====================
 def _check_and_install_playwright():
     """检查Playwright浏览器是否存在，如果不存在则自动安装"""
+    if os.getenv('DOCKER_ENV') == 'true':
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as playwright:
+            if not Path(playwright.chromium.executable_path).is_file():
+                raise RuntimeError('镜像缺少 Playwright 浏览器，请重新构建镜像')
+        return True
     print("检查Playwright浏览器...")
     
     # 检查是否安装了playwright模块
@@ -415,6 +421,8 @@ def _check_and_install_playwright():
 try:
     _check_and_install_playwright()
 except Exception as e:
+    if os.getenv('DOCKER_ENV') == 'true':
+        raise
     print(f"{_WARN} Playwright浏览器检查失败: {e}")
     print("   程序将继续启动，但Playwright功能可能不可用")
     # 继续启动，不影响主程序运行
@@ -422,6 +430,10 @@ except Exception as e:
 # ==================== 自动构建前端 ====================
 def _build_frontend():
     """自动安装依赖并构建前端"""
+    if os.getenv('DOCKER_ENV') == 'true':
+        if not Path('static/index.html').is_file():
+            raise RuntimeError('镜像缺少前端构建产物，请重新构建镜像')
+        return True
     xy_dir = Path("xy")
     frontend_dir = Path("frontend")
     static_dir = Path("static")
@@ -543,6 +555,8 @@ try:
     if not build_success:
         print(f"{_WARN} 前端构建失败，程序将继续启动但前端可能不可用")
 except Exception as e:
+    if os.getenv('DOCKER_ENV') == 'true':
+        raise
     print(f"{_WARN} 前端构建检查失败: {e}")
     print("   程序将继续启动，但前端可能不可用")
 
@@ -718,4 +732,4 @@ if __name__ == '__main__':
             loop.run_until_complete(main())
     except RuntimeError:
         # 如果没有事件循环，创建一个新的
-        asyncio.run(main()) 
+        asyncio.run(main())

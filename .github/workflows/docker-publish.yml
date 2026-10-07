@@ -1,0 +1,222 @@
+name: Build and publish Docker images
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOCKER_IMAGE: ${{ vars.DOCKERHUB_USERNAME || 'muzileee' }}/${{ vars.DOCKERHUB_REPOSITORY || 'xianyu-super-butler' }}
+
+jobs:
+  build:
+    name: Build and verify ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Python syntax and deployment configuration
+        run: |
+          python3 -m compileall -q Start.py reply_server.py docker/bootstrap.py
+          docker compose config --quiet
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image for smoke tests
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          platforms: ${{ matrix.platform }}
+          tags: xianyu-super-butler:ci
+          provenance: false
+          cache-from: type=gha,scope=xianyu-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=xianyu-${{ matrix.arch }}
+      - name: Check startup, login, browsers and persisted data without external network
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/xianyu-check.py <<'PY'
+          import http.cookiejar
+          import json
+          import re
+          import subprocess
+          import time
+          import urllib.request
+          from pathlib import Path
+
+          base_url = 'http://127.0.0.1:8080'
+          client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+          def request(path, data=None):
+              payload = None if data is None else json.dumps(data).encode()
+              response = client.open(urllib.request.Request(
+                  base_url + path, data=payload,
+                  headers={'Content-Type': 'application/json'} if data is not None else {},
+              ), timeout=5)
+              return json.load(response)
+
+          for attempt in range(60):
+              try:
+                  assert request('/health')['status'] == 'healthy'
+                  break
+              except Exception:
+                  time.sleep(2)
+          else:
+              raise RuntimeError('Container did not become healthy')
+
+          assert request('/verify')['initialized'] is True
+          assert request('/login', {'username': 'admin', 'password': 'wrong-password'})['success'] is False
+          assert request('/login', {'username': 'admin', 'password': 'ci-only-bootstrap-password'})['success'] is True
+          assert request('/verify')['is_admin'] is True
+          assert request('/verify')['authenticated'] is True
+          request('/logout', {})
+          assert request('/verify')['authenticated'] is False
+
+          html = client.open(base_url + '/', timeout=5).read().decode()
+          assets = re.findall(r'(?:src|href)="(/static/assets/[^"]+)"', html)
+          assert assets, 'Frontend assets missing'
+          for asset in assets:
+              assert client.open(base_url + asset, timeout=5).status == 200
+
+          for directory in ('logs', 'backups', 'browser_data', 'trajectory_history', 'slider_cookies', 'uploads/images'):
+              assert (Path('/app/data') / directory).is_dir()
+          assert Path('/app/global_config.yml').resolve() == Path('/app/data/global_config.yml')
+          assert Path('/app/static/uploads').resolve() == Path('/app/data/uploads')
+          marker = Path('/app/static/uploads/images/ci-persistence.txt')
+          if Path('/tmp/recreated').exists():
+              assert marker.read_text() == 'persisted'
+          else:
+              marker.write_text('persisted')
+              import execjs
+              assert execjs.eval('1 + 1') == 2
+              subprocess.run(['chromium', '--version'], check=True)
+              from playwright.sync_api import sync_playwright
+              with sync_playwright() as playwright:
+                  browser = playwright.chromium.launch(headless=False, args=['--no-sandbox'])
+                  page = browser.new_page()
+                  page.set_content('<p>browser ready</p>')
+                  assert page.locator('p').inner_text() == 'browser ready'
+                  browser.close()
+          print('Startup, authentication and persistence checks passed')
+          PY
+          docker volume create xianyu-ci-data
+          docker run -d --name xianyu-ci --network none --shm-size=512m \
+            -v xianyu-ci-data:/app/data \
+            -e ADMIN_EMAIL=ci@example.com -e ADMIN_PASSWORD=ci-only-bootstrap-password \
+            xianyu-super-butler:ci
+          docker cp /tmp/xianyu-check.py xianyu-ci:/tmp/check.py
+          docker exec xianyu-ci xvfb-run -a python /tmp/check.py
+          docker stop --time 15 xianyu-ci
+          docker rm xianyu-ci
+          docker run -d --name xianyu-ci --network none --shm-size=512m \
+            -v xianyu-ci-data:/app/data \
+            -e ADMIN_EMAIL=changed@example.com -e ADMIN_PASSWORD=changed-bootstrap-password \
+            xianyu-super-butler:ci
+          docker cp /tmp/xianyu-check.py xianyu-ci:/tmp/check.py
+          docker exec xianyu-ci touch /tmp/recreated
+          docker exec xianyu-ci python /tmp/check.py
+      - name: Container diagnostics
+        if: failure()
+        run: docker logs xianyu-ci || true
+      - name: Clean up smoke tests
+        if: always()
+        run: |
+          docker rm -f xianyu-ci || true
+          docker volume rm xianyu-ci-data || true
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME || 'muzileee' }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Publish verified platform image by digest
+        if: github.event_name != 'pull_request'
+        id: publish
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.DOCKER_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          provenance: false
+          cache-from: type=gha,scope=xianyu-${{ matrix.arch }}
+      - name: Export image digest
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE_DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${IMAGE_DIGEST#sha256:}"
+      - name: Upload image digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  publish:
+    name: Publish multi-platform tags
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME || 'muzileee' }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Generate image tags
+        id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+      - name: Merge amd64 and arm64 images
+        env:
+          IMAGE_METADATA: ${{ steps.metadata.outputs.json }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_arguments=()
+          while IFS= read -r tag; do
+            tag_arguments+=(--tag "$tag")
+          done < <(jq -r '.tags[]' <<< "$IMAGE_METADATA")
+          image_arguments=()
+          for digest_file in /tmp/digests/*; do
+            image_arguments+=("${DOCKER_IMAGE}@sha256:${digest_file##*/}")
+          done
+          test "${#image_arguments[@]}" -eq 2
+          docker buildx imagetools create "${tag_arguments[@]}" "${image_arguments[@]}"
+          while IFS= read -r tag; do
+            docker buildx imagetools inspect "$tag"
+            echo "Published: $tag" >> "$GITHUB_STEP_SUMMARY"
+          done < <(jq -r '.tags[]' <<< "$IMAGE_METADATA")

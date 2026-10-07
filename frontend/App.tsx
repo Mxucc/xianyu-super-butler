@@ -83,12 +83,17 @@ const App: React.FC = () => {
               <TerminalSquare className="w-10 h-10 text-black" />
             </div>
             <h2 className="text-3xl font-extrabold text-gray-900 mb-2 tracking-tight">系统尚未初始化</h2>
-            <p className="text-gray-600 font-medium">为避免默认口令风险，管理员必须通过服务器本机 CLI 初始化。</p>
+            <p className="text-gray-600 font-medium">请先创建管理员账号，再开始使用。</p>
           </div>
 
           <div className="space-y-4">
             <div className="p-4 rounded-2xl bg-gray-50 border border-gray-100">
-              <div className="text-sm font-bold text-gray-900 mb-2">请在服务器上执行：</div>
+              <div className="text-sm font-bold text-gray-900 mb-2">Docker / NAS 部署</div>
+              <p className="text-sm text-gray-600">在容器设置中填写管理员邮箱 ADMIN_EMAIL 和密码 ADMIN_PASSWORD，然后重新创建容器。首次启动会自动创建 admin 账号。</p>
+              <div className="text-xs text-gray-500 mt-2">重新创建时保留原数据目录。已有管理员的密码不会被环境变量覆盖。</div>
+            </div>
+            <div className="p-4 rounded-2xl bg-gray-50 border border-gray-100">
+              <div className="text-sm font-bold text-gray-900 mb-2">源码部署：在服务器上执行</div>
               <pre className="text-xs bg-black text-white p-4 rounded-2xl overflow-x-auto">python3 init_admin.py</pre>
               <div className="text-xs text-gray-500 mt-2">完成后刷新页面即可进入登录。</div>
             </div>

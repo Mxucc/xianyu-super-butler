@@ -1,152 +1,57 @@
-# 使用Python 3.11作为基础镜像
-FROM python:3.11-slim-bookworm AS base
+FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-builder
+WORKDIR /frontend
+RUN npm install --global pnpm@10.32.1
+COPY frontend/package.json frontend/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY frontend/ ./
+RUN pnpm build
 
-# 设置环境变量
+FROM python:3.11-slim-bookworm AS python-builder
+WORKDIR /app
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+FROM python:3.11-slim-bookworm AS runtime
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     TZ=Asia/Shanghai \
     DOCKER_ENV=true \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-
-# 设置工作目录
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    DB_PATH=/app/data/xianyu_data.db \
+    SQL_LOG_ENABLED=false \
+    PATH="/opt/venv/bin:$PATH"
 WORKDIR /app
+LABEL org.opencontainers.image.source="https://github.com/mu-zi-lee/xianyu-super-butler" \
+      org.opencontainers.image.title="闲鱼超级管家"
 
-# ==================== Frontend Builder Stage ====================
-FROM node:20-alpine AS frontend-builder
+COPY --from=python-builder /opt/venv /opt/venv
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl nodejs chromium tini xvfb xauth \
+        tzdata fonts-noto-cjk libgl1 libglib2.0-0 \
+    && playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /frontend
+COPY *.py ./
+COPY utils/ ./utils/
+COPY docker/ ./docker/
+COPY captcha_control.html ./
+COPY global_config.yml ./global_config.default.yml
+COPY static/xianyu_js_version_2.js ./static/xianyu_js_version_2.js
+COPY --from=frontend-builder /static/ ./static/
 
-# 复制前端依赖文件
-COPY frontend/package.json frontend/pnpm-lock.yaml ./
+RUN mkdir -p /app/data \
+    && ln -s /app/data/global_config.yml /app/global_config.yml \
+    && ln -s /app/data/logs /app/logs \
+    && ln -s /app/data/backups /app/backups \
+    && ln -s /app/data/browser_data /app/browser_data \
+    && ln -s /app/data/trajectory_history /app/trajectory_history \
+    && ln -s /app/data/slider_cookies /app/slider_cookies \
+    && ln -s /app/data/uploads /app/static/uploads
 
-# 安装 pnpm 并安装依赖
-RUN npm install -g pnpm && pnpm install --frozen-lockfile
-
-# 复制前端源码并构建
-COPY frontend/ ./
-RUN pnpm build
-
-# ==================== Python Builder Stage ====================
-FROM base AS builder
-
-# 安装基础依赖
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        curl \
-        ca-certificates \
-        && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-
-RUN python -m venv /opt/venv && \
-    /opt/venv/bin/pip install --no-cache-dir --upgrade pip
-ENV VIRTUAL_ENV=/opt/venv
-ENV PATH="$VIRTUAL_ENV/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
-
-# 复制requirements.txt并安装Python依赖
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# 复制项目文件（排除 frontend 目录）
-COPY . .
-
-# 复制前端构建产物到 static 目录
-COPY --from=frontend-builder /static ./static
-
-# 项目已完全开源，无需编译二进制模块
-
-# Runtime stage: only keep what is needed to run the app
-FROM base AS runtime
-
-# 设置标签信息
-LABEL maintainer="zhinianboke" \
-      version="2.2.0" \
-      description="闲鱼自动回复系统 - 企业级多用户版本，支持自动发货和免拼发货" \
-      repository="https://github.com/zhinianboke/xianyu-auto-reply" \
-      license="仅供学习使用，禁止商业用途" \
-      author="zhinianboke" \
-      build-date="" \
-      vcs-ref=""
-
-ENV NODE_PATH=/usr/lib/node_modules
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        nodejs \
-        npm \
-        tzdata \
-        curl \
-        ca-certificates \
-        # 图像处理依赖
-        libjpeg-dev \
-        libpng-dev \
-        libfreetype6-dev \
-        fonts-dejavu-core \
-        fonts-liberation \
-        # Playwright浏览器依赖
-        libnss3 \
-        libnspr4 \
-        libatk-bridge2.0-0 \
-        libdrm2 \
-        libxkbcommon0 \
-        libxcomposite1 \
-        libxdamage1 \
-        libxrandr2 \
-        libgbm1 \
-        libxss1 \
-        libasound2 \
-        libatspi2.0-0 \
-        libgtk-3-0 \
-        libgdk-pixbuf2.0-0 \
-        libxcursor1 \
-        libxi6 \
-        libxrender1 \
-        libxext6 \
-        libx11-6 \
-        libxft2 \
-        libxinerama1 \
-        libxtst6 \
-        libappindicator3-1 \
-        libx11-xcb1 \
-        libxfixes3 \
-        xdg-utils \
-        chromium \
-        xvfb \
-        x11vnc \
-        fluxbox \
-        # OpenCV运行时依赖
-        libgl1 \
-        libglib2.0-0 \
-        && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-
-# 设置时区        
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
-
-# 验证Node.js安装并设置环境变量
-RUN node --version && npm --version
-
-COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder /app /app
-ENV VIRTUAL_ENV=/opt/venv
-ENV PATH="$VIRTUAL_ENV/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
-
-RUN playwright install chromium && \
-    playwright install-deps chromium
-
-# 创建必要的目录并设置权限
-RUN mkdir -p /app/logs /app/data /app/backups /app/static/uploads/images && \
-    chmod 777 /app/logs /app/data /app/backups /app/static/uploads /app/static/uploads/images
-
-# 配置系统限制，防止core文件生成
-RUN echo "ulimit -c 0" >> /etc/profile
-
-# 注意: 为了简化权限问题，使用root用户运行
-# 在生产环境中，建议配置适当的用户映射
-
-# 暴露端口
 EXPOSE 8080
-
-# 健康检查
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
-
-# 启动命令
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl --fail --silent http://127.0.0.1:8080/health || exit 1
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/bin/sh", "/app/docker/entrypoint.sh"]
 CMD ["python", "/app/Start.py"]

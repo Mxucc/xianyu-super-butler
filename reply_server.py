@@ -469,7 +469,8 @@ async def health_check():
         # 检查数据库连接
         from db_manager import db_manager
         try:
-            db_manager.get_all_cookies()
+            with db_manager.lock:
+                db_manager.conn.execute('SELECT 1').fetchone()
             db_status = "ok"
         except Exception:
             db_status = "error"
@@ -498,12 +499,14 @@ async def health_check():
 
         return status
 
+    except HTTPException:
+        raise
     except Exception as e:
-        return {
+        raise HTTPException(status_code=503, detail={
             "status": "unhealthy",
             "timestamp": time.time(),
             "error": str(e)
-        }
+        }) from e
 
 
 # 服务 React 前端 SPA - 所有前端路由都返回 index.html
